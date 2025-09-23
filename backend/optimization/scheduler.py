@@ -1,8 +1,13 @@
 import os
 import sys
+import json
 import pandas as pd
 from datetime import datetime, timedelta
 import logging
+from itertools import permutations
+import copy
+from collections import defaultdict
+import random
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -10,17 +15,394 @@ logger = logging.getLogger(__name__)
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'ml')))
 from use_model import RailwayDelayPredictor
 
+class ControlStationSimulator:
+    def __init__(self):
+        self.predictor = None
+        
+    def load_predictor(self, model_path):
+        """Load the ML predictor model"""
+        self.predictor = RailwayDelayPredictor()
+        self.predictor.load_model(model_path)
+        
+    def generate_all_scenarios(self, train_data):
+        """Generate all possible scheduling scenarios for control station"""
+        logger.info("Generating all possible scheduling scenarios...")
+        
+        scenarios = []
+        
+        # Scenario 1: Default Schedule (Original Timetable Order)
+        scenarios.append(self._create_default_schedule(train_data))
+        
+        # Scenario 2: ML Optimized Schedule
+        scenarios.append(self._create_optimized_schedule(train_data))
+        
+        # Scenario 3: Priority-Based Schedules
+        scenarios.extend(self._create_priority_schedules(train_data))
+        
+        # Scenario 4: Delay-Based Schedules
+        scenarios.extend(self._create_delay_schedules(train_data))
+        
+        # Scenario 5: Platform-Based Schedules
+        scenarios.extend(self._create_platform_schedules(train_data))
+        
+        # Scenario 6: Custom Order Scenarios (What-if specific train goes first)
+        scenarios.extend(self._create_custom_order_scenarios(train_data))
+        
+        # Scenario 7: Alternative Routing Scenarios
+        scenarios.extend(self._create_alternative_routing_scenarios(train_data))
+        
+        logger.info(f"Generated {len(scenarios)} total scenarios for control station")
+        return scenarios
+    
+    def _create_default_schedule(self, train_data):
+        """Original timetable order"""
+        schedule = copy.deepcopy(train_data)
+        schedule.sort(key=lambda x: x['scheduled_arrival_hour'] * 60 + x['scheduled_arrival_minute'])
+        
+        for i, train in enumerate(schedule):
+            train['order'] = i + 1
+            
+        return {
+            'scenario_id': 'DEFAULT',
+            'scenario_name': 'Default Timetable Order',
+            'description': 'Original scheduled order based on arrival times',
+            'schedule': schedule,
+            'use_case': 'Normal operations, no disruptions'
+        }
+    
+    def _create_optimized_schedule(self, train_data):
+        """ML-optimized schedule"""
+        schedule = copy.deepcopy(train_data)
+        schedule.sort(key=lambda x: (
+            x['priority'],
+            x['predicted_delay'], 
+            -x['distance'],
+            x['scheduled_arrival_hour'] * 60 + x['scheduled_arrival_minute']
+        ))
+        
+        for i, train in enumerate(schedule):
+            train['order'] = i + 1
+            
+        return {
+            'scenario_id': 'ML_OPTIMIZED',
+            'scenario_name': 'ML Optimized Schedule',
+            'description': 'AI-optimized based on priority, delay prediction, and distance',
+            'schedule': schedule,
+            'use_case': 'Optimal performance under normal conditions'
+        }
+    
+    def _create_priority_schedules(self, train_data):
+        """Different priority-based scenarios"""
+        scenarios = []
+        
+        # Express trains first
+        schedule1 = copy.deepcopy(train_data)
+        express_trains = [t for t in schedule1 if t['priority'] == 1]
+        other_trains = [t for t in schedule1 if t['priority'] != 1]
+        combined = express_trains + sorted(other_trains, key=lambda x: x['predicted_delay'])
+        
+        for i, train in enumerate(combined):
+            train['order'] = i + 1
+            
+        scenarios.append({
+            'scenario_id': 'EXPRESS_FIRST',
+            'scenario_name': 'Express Trains Priority',
+            'description': 'All express trains scheduled first, then others by delay',
+            'schedule': combined,
+            'use_case': 'When express train punctuality is critical'
+        })
+        
+        # Local trains first
+        schedule2 = copy.deepcopy(train_data)
+        local_trains = [t for t in schedule2 if t['priority'] == 3]
+        other_trains = [t for t in schedule2 if t['priority'] != 3]
+        combined = local_trains + sorted(other_trains, key=lambda x: x['predicted_delay'])
+        
+        for i, train in enumerate(combined):
+            train['order'] = i + 1
+            
+        scenarios.append({
+            'scenario_id': 'LOCAL_FIRST',
+            'scenario_name': 'Local Trains Priority',
+            'description': 'Local trains scheduled first to clear local traffic',
+            'schedule': combined,
+            'use_case': 'During peak hours to manage local commuter traffic'
+        })
+        
+        return scenarios
+    
+    def _create_delay_schedules(self, train_data):
+        """Delay-based scheduling scenarios"""
+        scenarios = []
+        
+        # Minimum delay first
+        schedule1 = copy.deepcopy(train_data)
+        schedule1.sort(key=lambda x: x['predicted_delay'])
+        for i, train in enumerate(schedule1):
+            train['order'] = i + 1
+            
+        scenarios.append({
+            'scenario_id': 'MIN_DELAY_FIRST',
+            'scenario_name': 'Minimum Delay First',
+            'description': 'Trains with lowest predicted delays scheduled first',
+            'schedule': schedule1,
+            'use_case': 'When overall punctuality is the main concern'
+        })
+        
+        # Maximum delay first
+        schedule2 = copy.deepcopy(train_data)
+        schedule2.sort(key=lambda x: -x['predicted_delay'])
+        for i, train in enumerate(schedule2):
+            train['order'] = i + 1
+            
+        scenarios.append({
+            'scenario_id': 'MAX_DELAY_FIRST',
+            'scenario_name': 'Maximum Delay First',
+            'description': 'Trains with highest delays scheduled first to clear backlog',
+            'schedule': schedule2,
+            'use_case': 'When clearing delayed trains is priority'
+        })
+        
+        return scenarios
+    
+    def _create_platform_schedules(self, train_data):
+        """Platform-based scheduling scenarios"""
+        scenarios = []
+        
+        # Group by platform
+        schedule1 = copy.deepcopy(train_data)
+        schedule1.sort(key=lambda x: (x['platform_no'], x['predicted_delay']))
+        for i, train in enumerate(schedule1):
+            train['order'] = i + 1
+            
+        scenarios.append({
+            'scenario_id': 'PLATFORM_GROUPED',
+            'scenario_name': 'Platform Grouped Schedule',
+            'description': 'Trains grouped by platform to minimize conflicts',
+            'schedule': schedule1,
+            'use_case': 'When platform conflicts are causing major delays'
+        })
+        
+        # Platform load balancing
+        schedule2 = copy.deepcopy(train_data)
+        platform_counts = defaultdict(int)
+        for train in schedule2:
+            platform_counts[train['platform_no']] += 1
+        
+        # Distribute trains more evenly across platforms
+        available_platforms = list(range(1, 7))  # Platforms 1-6
+        for train in schedule2:
+            current_platform = train['platform_no']
+            # Find less crowded platform
+            min_platform = min(available_platforms, key=lambda p: platform_counts.get(p, 0))
+            if platform_counts[min_platform] < platform_counts[current_platform] - 1:
+                train['original_platform'] = current_platform
+                train['platform_no'] = min_platform
+                train['platform_changed'] = True
+                platform_counts[current_platform] -= 1
+                platform_counts[min_platform] += 1
+        
+        schedule2.sort(key=lambda x: x['predicted_delay'])
+        for i, train in enumerate(schedule2):
+            train['order'] = i + 1
+            
+        scenarios.append({
+            'scenario_id': 'PLATFORM_BALANCED',
+            'scenario_name': 'Platform Load Balanced',
+            'description': 'Trains redistributed across platforms for load balancing',
+            'schedule': schedule2,
+            'use_case': 'When certain platforms are overcrowded'
+        })
+        
+        return scenarios
+    
+    def _create_custom_order_scenarios(self, train_data):
+        """Custom order scenarios - what if specific train goes first"""
+        scenarios = []
+        
+        # What if each train goes first
+        for target_train in train_data:
+            schedule = copy.deepcopy(train_data)
+            
+            # Move target train to first position
+            target_train_copy = None
+            remaining_trains = []
+            
+            for train in schedule:
+                if train['train_no'] == target_train['train_no']:
+                    target_train_copy = train
+                else:
+                    remaining_trains.append(train)
+            
+            # Sort remaining trains by delay
+            remaining_trains.sort(key=lambda x: x['predicted_delay'])
+            
+            # Combine: target train first, then others
+            final_schedule = [target_train_copy] + remaining_trains
+            
+            for i, train in enumerate(final_schedule):
+                train['order'] = i + 1
+                if i == 0:
+                    train['forced_first'] = True
+            
+            scenarios.append({
+                'scenario_id': f'TRAIN_{target_train["train_no"]}_FIRST',
+                'scenario_name': f'Train {target_train["train_no"]} Goes First',
+                'description': f'What if Train {target_train["train_no"]} ({target_train["train_name"]}) is prioritized first',
+                'schedule': final_schedule,
+                'use_case': f'Emergency priority for Train {target_train["train_no"]} or specific operational needs'
+            })
+        
+        return scenarios
+    
+    def _create_alternative_routing_scenarios(self, train_data):
+        """Alternative routing scenarios"""
+        scenarios = []
+        
+        # Same track conflict resolution
+        schedule1 = copy.deepcopy(train_data)
+        
+        # Identify trains that might use same track (same route)
+        route_groups = defaultdict(list)
+        for train in schedule1:
+            route_key = f"{train['source']}-{train['destination']}"
+            route_groups[route_key].append(train)
+        
+        # For routes with multiple trains, spread them out
+        for route, trains in route_groups.items():
+            if len(trains) > 1:
+                # Sort by predicted delay
+                trains.sort(key=lambda x: x['predicted_delay'])
+                
+                # Add time spacing between trains on same route
+                for i, train in enumerate(trains):
+                    if i > 0:
+                        train['time_spacing_added'] = i * 10  # 10 min spacing
+                        train['predicted_delay'] += train['time_spacing_added']
+                        train['route_spacing_applied'] = True
+        
+        schedule1.sort(key=lambda x: x['predicted_delay'])
+        for i, train in enumerate(schedule1):
+            train['order'] = i + 1
+            
+        scenarios.append({
+            'scenario_id': 'ROUTE_SPACED',
+            'scenario_name': 'Same Route Trains Spaced',
+            'description': 'Trains on same routes spaced out to avoid track conflicts',
+            'schedule': schedule1,
+            'use_case': 'When same-route trains are causing track congestion'
+        })
+        
+        # Alternative platform assignment
+        schedule2 = copy.deepcopy(train_data)
+        for train in schedule2:
+            # Simulate alternative platform assignment
+            original_platform = train['platform_no']
+            alternative_platforms = [p for p in range(1, 7) if p != original_platform]
+            if alternative_platforms:
+                train['alternative_platform'] = random.choice(alternative_platforms)
+                train['platform_no'] = train['alternative_platform']
+                train['original_platform'] = original_platform
+                train['platform_reassigned'] = True
+        
+        schedule2.sort(key=lambda x: (x['platform_no'], x['predicted_delay']))
+        for i, train in enumerate(schedule2):
+            train['order'] = i + 1
+            
+        scenarios.append({
+            'scenario_id': 'ALTERNATIVE_PLATFORMS',
+            'scenario_name': 'Alternative Platform Assignment',
+            'description': 'Trains reassigned to alternative platforms',
+            'schedule': schedule2,
+            'use_case': 'When original platforms have maintenance or issues'
+        })
+        
+        return scenarios
+
+def calculate_scenario_performance(schedule):
+    """Calculate comprehensive performance metrics for each scenario"""
+    metrics = {
+        'total_trains': len(schedule),
+        'total_delay': sum(train['predicted_delay'] for train in schedule),
+        'avg_delay': sum(train['predicted_delay'] for train in schedule) / len(schedule),
+        'max_delay': max(train['predicted_delay'] for train in schedule),
+        'min_delay': min(train['predicted_delay'] for train in schedule),
+        'platform_conflicts': 0,
+        'express_trains_avg_position': 0,
+        'passenger_satisfaction_score': 0,
+        'efficiency_score': 0
+    }
+    
+    # Platform conflict analysis
+    platform_usage = defaultdict(list)
+    for train in schedule:
+        platform_usage[train['platform_no']].append(train)
+    
+    conflicts = 0
+    for platform, trains in platform_usage.items():
+        if len(trains) > 1:
+            conflicts += len(trains) - 1  # Each additional train on same platform is a potential conflict
+    
+    metrics['platform_conflicts'] = conflicts
+    
+    # Express train positioning
+    express_trains = [t for t in schedule if t['priority'] == 1]
+    if express_trains:
+        avg_pos = sum(t['order'] for t in express_trains) / len(express_trains)
+        metrics['express_trains_avg_position'] = avg_pos
+    
+    # Passenger satisfaction (higher is better)
+    delay_penalty = min(100, metrics['avg_delay'] * 2)  # Max penalty 100
+    conflict_penalty = metrics['platform_conflicts'] * 5
+    metrics['passenger_satisfaction_score'] = max(0, 100 - delay_penalty - conflict_penalty)
+    
+    # Efficiency score
+    metrics['efficiency_score'] = max(0, 100 - metrics['avg_delay'] - metrics['platform_conflicts'] * 3)
+    
+    return metrics
+
+def rank_scenarios(scenarios):
+    """Rank scenarios by overall performance"""
+    scenario_rankings = []
+    
+    for scenario in scenarios:
+        metrics = calculate_scenario_performance(scenario['schedule'])
+        
+        # Calculate overall score
+        overall_score = (
+            metrics['passenger_satisfaction_score'] * 0.4 +
+            metrics['efficiency_score'] * 0.3 +
+            (100 - min(50, metrics['platform_conflicts'] * 10)) * 0.2 +
+            (100 - min(50, metrics['express_trains_avg_position'] * 5)) * 0.1
+        )
+        
+        scenario_rankings.append({
+            'scenario': scenario,
+            'metrics': metrics,
+            'overall_score': overall_score,
+            'rank': 0  # Will be assigned after sorting
+        })
+    
+    # Sort by overall score (descending)
+    scenario_rankings.sort(key=lambda x: x['overall_score'], reverse=True)
+    
+    # Assign ranks
+    for i, ranking in enumerate(scenario_rankings):
+        ranking['rank'] = i + 1
+    
+    return scenario_rankings
+
+# [Keep your existing functions: load_data, parse_time, prepare_train_data]
+
 def load_data(dataset_path, num_trains=8):
     """Load dataset and extract subset of trains"""
     df = pd.read_csv(dataset_path)
     logger.info(f"Total rows in dataset: {len(df)}")
     
-    # Get unique train numbers and train types for better variety
     unique_trains = df['Train No'].unique()[:num_trains]
     subset_df = df[df['Train No'].isin(unique_trains)].copy()
     
     logger.info(f"Selected {len(subset_df)} rows for {len(unique_trains)} trains")
-    logger.info(f"Available train types in dataset: {df['Train Type'].unique()}")
     return subset_df
 
 def parse_time(time_str):
@@ -28,13 +410,11 @@ def parse_time(time_str):
     time_str = str(time_str).strip()
     
     if ':' in time_str:
-        # Format: "H:MM" or "HH:MM"
         parts = time_str.split(':')
         hour = int(parts[0]) if parts[0] else 0
         minute = int(parts[1]) if len(parts) > 1 and parts[1] else 0
     else:
-        # Format: "HHMM" or "HMM"
-        if len(time_str) == 3:  # e.g., "800" = "8:00"
+        if len(time_str) == 3:
             time_str = '0' + time_str
         time_str = time_str.zfill(4)
         hour = int(time_str[:2]) if len(time_str) >= 2 else 0
@@ -48,10 +428,8 @@ def prepare_train_data(df, predictor):
     grouped = df.groupby('Train No')
     
     for train_no, group in grouped:
-        # Use first row for static train features
         row = group.iloc[0]
 
-        # Parse arrival and departure times with improved error handling
         arrival_time = str(row['Arrival time']) if pd.notna(row['Arrival time']) else '12:00'
         departure_time = str(row['Departure Time']) if pd.notna(row['Departure Time']) else '13:00'
         
@@ -81,21 +459,17 @@ def prepare_train_data(df, predictor):
             delay = predictor.predict_delay(input_data)
         except Exception as e:
             logger.error(f"Error predicting delay for train {train_no}: {e}")
-            delay = 5.0  # Default delay
+            delay = 5.0
 
-        # Enhanced priority mapping based on train types found in your dataset
         train_type = str(row['Train Type']).upper()
         if 'EXPRESS' in train_type or 'SUPERFAST' in train_type:
-            priority = 1  # Highest priority
+            priority = 1
         elif 'PASSENGER' in train_type or 'LOCAL' in train_type:
-            priority = 3  # Lowest priority
-        else:  # EMU, Other, etc.
-            priority = 2  # Medium priority
+            priority = 3
+        else:
+            priority = 2
 
-        # Extract train name for better identification
         train_name = str(row['Train Name']) if 'Train Name' in row else f"Train {train_no}"
-
-        logger.info(f"Train {train_no} ({train_name}) - Type: {train_type} - Priority: {priority} - Predicted delay: {delay:.2f} min")
 
         train_data.append({
             'train_no': train_no,
@@ -117,172 +491,106 @@ def prepare_train_data(df, predictor):
     logger.info(f"Prepared data for {len(train_data)} trains with predicted delays")
     return train_data
 
-def calculate_actual_times(train_data):
-    """Calculate actual arrival/departure times including delays"""
-    for train in train_data:
-        # Convert scheduled times to minutes since midnight
-        scheduled_arrival_minutes = train['scheduled_arrival_hour'] * 60 + train['scheduled_arrival_minute']
-        scheduled_departure_minutes = train['scheduled_departure_hour'] * 60 + train['scheduled_departure_minute']
-        
-        # Add delay to get actual times
-        actual_arrival_minutes = scheduled_arrival_minutes + train['predicted_delay']
-        actual_departure_minutes = scheduled_departure_minutes + train['predicted_delay']
-        
-        train['actual_arrival_minutes'] = actual_arrival_minutes
-        train['actual_departure_minutes'] = actual_departure_minutes
-        
-    return train_data
-
-def check_platform_conflicts(train_data):
-    """Check for platform conflicts and calculate separation times"""
-    conflicts = []
-    platform_groups = {}
-    
-    # Group trains by platform
-    for train in train_data:
-        platform = train['platform_no']
-        if platform not in platform_groups:
-            platform_groups[platform] = []
-        platform_groups[platform].append(train)
-    
-    # Check conflicts within each platform
-    for platform, trains in platform_groups.items():
-        if len(trains) > 1:
-            # Sort trains by actual arrival time
-            trains.sort(key=lambda x: x['actual_arrival_minutes'])
-            
-            for i in range(len(trains) - 1):
-                current_train = trains[i]
-                next_train = trains[i + 1]
-                
-                # Calculate time gap between trains (assuming 15 min dwell time)
-                current_departure = current_train['actual_departure_minutes'] + 15  # buffer
-                next_arrival = next_train['actual_arrival_minutes']
-                
-                time_gap = next_arrival - current_departure
-                
-                if time_gap < 10:  # Minimum 10 minutes separation required
-                    conflicts.append({
-                        'platform': platform,
-                        'train1': current_train['train_no'],
-                        'train1_name': current_train['train_name'],
-                        'train2': next_train['train_no'],
-                        'train2_name': next_train['train_name'],
-                        'time_gap': time_gap,
-                        'conflict_severity': 'HIGH' if time_gap < 0 else 'MEDIUM'
-                    })
-    
-    return conflicts
-
-def advanced_greedy_scheduling(train_data):
-    """Advanced greedy scheduling with comprehensive optimization"""
-    logger.info(f"Starting advanced scheduling optimization for {len(train_data)} trains")
-    
-    # Calculate actual times including delays
-    train_data = calculate_actual_times(train_data)
-    
-    # Check for platform conflicts before optimization
-    conflicts = check_platform_conflicts(train_data)
-    logger.info(f"Found {len(conflicts)} potential platform conflicts")
-    
-    # Multi-criteria sorting:
-    # 1. Priority (1=Express, 2=EMU/Other, 3=Passenger)
-    # 2. Predicted delay (lower is better)
-    # 3. Distance (longer distances get preference for efficiency)
-    # 4. Scheduled arrival time (earlier is better)
-    sorted_trains = sorted(train_data, key=lambda x: (
-        x['priority'],                    # Primary: Priority
-        x['predicted_delay'],            # Secondary: Delay
-        -x['distance'],                  # Tertiary: Distance (negative for desc order)
-        x['scheduled_arrival_hour'] * 60 + x['scheduled_arrival_minute']  # Quaternary: Time
-    ))
-    
-    # Assign order based on sorting
-    result = []
-    for order, train in enumerate(sorted_trains):
-        result.append({
-            'train_no': train['train_no'],
-            'train_name': train['train_name'],
-            'train_type': train['train_type'],
-            'order': order,
-            'platform_no': train['platform_no'],
-            'priority': train['priority'],
-            'predicted_delay': train['predicted_delay'],
-            'distance': train['distance'],
-            'weather': train['weather'],
-            'scheduled_arrival': f"{train['scheduled_arrival_hour']:02d}:{train['scheduled_arrival_minute']:02d}",
-            'scheduled_departure': f"{train['scheduled_departure_hour']:02d}:{train['scheduled_departure_minute']:02d}",
-            'actual_arrival_time': f"{int(train['actual_arrival_minutes']//60):02d}:{int(train['actual_arrival_minutes']%60):02d}",
-            'actual_departure_time': f"{int(train['actual_departure_minutes']//60):02d}:{int(train['actual_departure_minutes']%60):02d}",
-            'source': train['source'],
-            'destination': train['destination']
-        })
-    
-    logger.info("Advanced scheduling optimization completed successfully")
-    return result, conflicts
-
 def main():
-    logger.info("Starting intelligent train scheduling optimization...")
-
+    logger.info("Starting Control Station Decision Support System...")
+    
     base_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
     dataset_path = os.path.join(base_path, 'final_dataset.csv')
     model_path = os.path.join(base_path, 'backend', 'ml', 'train_delay_model.pkl')
-
+    
+    output_dir = os.path.join(base_path, 'control_station_output')
+    os.makedirs(output_dir, exist_ok=True)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
     try:
-        predictor = RailwayDelayPredictor()
-        predictor.load_model(model_path)
-
-        df = load_data(dataset_path, num_trains=8)  # Increased to 8 trains for better demonstration
-        train_data = prepare_train_data(df, predictor)
-
-        optimized_schedule, conflicts = advanced_greedy_scheduling(train_data)
-
-        print("\n" + "="*100)
-        print("🚂 INTELLIGENT TRAIN SCHEDULING OPTIMIZATION RESULTS")
-        print("="*100)
+        # Initialize simulator
+        simulator = ControlStationSimulator()
+        simulator.load_predictor(model_path)
         
-        # Display optimized schedule with enhanced information
-        print(f"\n📋 OPTIMIZED SCHEDULE (Priority: 1=Express, 2=EMU/Other, 3=Passenger)")
-        print("-"*100)
-        for entry in optimized_schedule:
-            priority_labels = {1: "EXPRESS", 2: "EMU/OTHER", 3: "PASSENGER"}
-            priority_label = priority_labels.get(entry['priority'], "UNKNOWN")
+        # Load and prepare data
+        df = load_data(dataset_path, num_trains=6)  # Using 6 trains for manageable scenarios
+        train_data = prepare_train_data(df, simulator.predictor)
+        
+        # Generate all possible scenarios
+        all_scenarios = simulator.generate_all_scenarios(train_data)
+        
+        # Rank scenarios by performance
+        scenario_rankings = rank_scenarios(all_scenarios)
+        
+        # Create control station report
+        control_station_report = {
+            "metadata": {
+                "generation_timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "total_scenarios": len(all_scenarios),
+                "total_trains": len(train_data),
+                "system": "Control Station Decision Support System"
+            },
+            "scenario_rankings": scenario_rankings,
+            "train_data": train_data
+        }
+        
+        # Save detailed report
+        report_path = os.path.join(output_dir, f'control_station_scenarios_{timestamp}.json')
+        with open(report_path, 'w', encoding='utf-8') as f:
+            json.dump(control_station_report, f, indent=2, ensure_ascii=False, default=str)
+        
+        # Display Control Station Dashboard
+        print("\n" + "="*130)
+        print("🎯 CONTROL STATION DECISION SUPPORT SYSTEM - ALL POSSIBLE SCENARIOS")
+        print("="*130)
+        
+        print(f"\n📊 SCENARIO ANALYSIS COMPLETE")
+        print(f"   Total Scenarios Generated: {len(all_scenarios)}")
+        print(f"   Trains to Schedule: {len(train_data)}")
+        print(f"   Analysis Time: {datetime.now().strftime('%H:%M:%S')}")
+        
+        print(f"\n🏆 TOP 5 RECOMMENDED SCENARIOS (Ranked by Performance)")
+        print("-"*130)
+        
+        for i, ranking in enumerate(scenario_rankings[:5]):
+            scenario = ranking['scenario']
+            metrics = ranking['metrics']
+            score = ranking['overall_score']
             
-            # Safe string conversion for train_type
-            train_type = str(entry['train_type'])
+            rank_icon = ["🥇", "🥈", "🥉", "🏅", "⭐"][i]
             
-            print(f"🚆 Order: {entry['order'] + 1:2d} | Train: {entry['train_no']} ({entry['train_name'][:30]})")
-            print(f"   Type: {train_type:<15} | Priority: {priority_label:<12} | Platform: {entry['platform_no']}")
-            print(f"   Route: {entry['source']} → {entry['destination']}")
-            print(f"   Distance: {entry['distance']:.0f}km | Weather: {entry['weather']} | Delay: {entry['predicted_delay']:.1f} min")
-            print(f"   Scheduled: {entry['scheduled_arrival']} → {entry['scheduled_departure']}")
-            print(f"   With Delay: {entry['actual_arrival_time']} → {entry['actual_departure_time']}")
+            print(f"{rank_icon} RANK {ranking['rank']}: {scenario['scenario_name']} (ID: {scenario['scenario_id']})")
+            print(f"   Description: {scenario['description']}")
+            print(f"   Use Case: {scenario['use_case']}")
+            print(f"   Performance: Avg Delay {metrics['avg_delay']:.1f}min | Conflicts {metrics['platform_conflicts']} | Score {score:.1f}")
+            print("   Trains in schedule:")
+            for train in scenario['schedule']:
+                train_name = train.get('train_name', 'Unknown')
+                train_no = train.get('train_no', 'Unknown')
+                order = train.get('order', 'NA')
+                print(f"      Order {order}: Train No: {train_no}, Name: {train_name}")
             print()
 
-        # Display platform conflicts with enhanced details
-        if conflicts:
-            print("⚠️  PLATFORM CONFLICTS DETECTED:")
-            print("-"*60)
-            for conflict in conflicts:
-                print(f"🔴 Platform {conflict['platform']}: {conflict['conflict_severity']} RISK")
-                print(f"   Train {conflict['train1']} ({conflict['train1_name'][:20]}) vs")
-                print(f"   Train {conflict['train2']} ({conflict['train2_name'][:20]})")
-                print(f"   Time gap: {conflict['time_gap']:.1f} minutes")
-                print()
-        else:
-            print("✅ NO PLATFORM CONFLICTS DETECTED")
-
-        # Summary statistics
-        avg_delay = sum(e['predicted_delay'] for e in optimized_schedule) / len(optimized_schedule)
-        total_distance = sum(e['distance'] for e in optimized_schedule)
+        print(f"\n📋 ALL AVAILABLE SCENARIOS FOR CONTROL STATION:")
+        print("-"*130)
         
-        print("-"*100)
-        print(f"📊 SUMMARY: {len(optimized_schedule)} trains optimized | Average delay: {avg_delay:.1f} min | Total distance: {total_distance:.0f}km")
-        print("="*100)
+        for ranking in scenario_rankings:
+            scenario = ranking['scenario']
+            metrics = ranking['metrics']
+            
+            status = "🟢 EXCELLENT" if ranking['rank'] <= 3 else "🟡 GOOD" if ranking['rank'] <= 7 else "🔴 NEEDS REVIEW"
+            
+            print(f"[{ranking['rank']:2d}] {scenario['scenario_id']:<20} | {scenario['scenario_name']:<30} | {status}")
+            print(f"     Avg Delay: {metrics['avg_delay']:.1f}min | Platform Conflicts: {metrics['platform_conflicts']:2d} | Satisfaction: {metrics['passenger_satisfaction_score']:.0f}%")
+            
+        print(f"\n🎯 CONTROL STATION INSTRUCTIONS:")
+        print(f"   1. SELECT ANY SCENARIO: Choose based on current operational needs")
+        print(f"   2. LIVE SITUATION FACTORS: Consider weather, passenger load, maintenance")
+        print(f"   3. IMPLEMENTATION: Apply selected scenario to train scheduling system")
+        print(f"   4. MONITORING: Track performance and adjust if needed")
+        
+        print(f"\n📁 DETAILED SCENARIOS SAVED TO: {report_path}")
+        print("="*130)
         
     except Exception as e:
-        logger.error(f"Error in main execution: {e}")
-        print(f"❌ Error occurred: {e}")
+        logger.error(f"Error in control station system: {e}")
+        print(f"❌ System error: {e}")
 
 if __name__ == '__main__':
     main()
