@@ -170,6 +170,7 @@ const SectionMap = () => {
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-foreground">Active Junction</label>
                   <select 
+                    title='Select Junction'
                     className="w-full px-3 py-2 border border-input rounded-lg bg-background text-sm"
                     value={selectedJunction}
                     onChange={(e) => setSelectedJunction(e.target.value)}

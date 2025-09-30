@@ -94,6 +94,7 @@ const Login = () => {
               <div className="space-y-2">
                 <Label htmlFor="role">Role</Label>
                 <select
+                  title="Select your role"
                   id="role"
                   className="w-full px-3 py-2 border border-input rounded-lg bg-background text-sm"
                   value={credentials.role}
